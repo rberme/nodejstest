@@ -28,15 +28,14 @@ export class GameServer {
                     req.on("data", chunk => {
                         body += chunk;
                     });
-                    req.on("end", () => {
+                    req.on("end", async () => {
                         res.writeHead(200, { 'Content-Type': 'text/plain' });
 
                         try {
                             let data = JSON.parse(body);
-                            // console.log("TikTok webhook:", data);
-                            let event = data.event;
-                            if (event != null) {
-                                if (event == PaymentEvent.Success) {
+                            
+                            if (data.event != null) {
+                                if (data.event == PaymentEvent.Success) {
                                     let content = JSON.parse(data.content);
                                     let orderId = content.order_id;
                                     let tradeOrderId = content.trade_order_id;
@@ -47,10 +46,56 @@ export class GameServer {
                                         player.orderState = 2;
                                     }
                                 }
-                                
+
                             } else {
                                 let msgID = data.msgID;
                                 switch (msgID) {
+                                    case MsgID.CreateOrder:
+                                        {
+
+                                            let openID = data.openID as string;
+                                            let code = data.code as string;
+
+                                            let player: Player;
+                                            // this.players.get(query.openID as string);
+                                            if (openID == null || this.players.has(openID as string) == false) {//需要登录
+                                                player = PlayerPool.Inst.Pop();
+                                                player.accessToken = await this.getAccessToken(code);//静默登录;
+                                                this.players.set(openID, player);
+                                            } else {
+                                                player = this.players.get(openID);
+                                                let now = Date.now();
+                                                if (now > player.accessToken.createTime + player.accessToken.expires_in - 10) {//token过期了
+                                                    if (now > player.accessToken.createTime + player.accessToken.refresh_expires_in - 10) {
+                                                        player.accessToken = await this.getAccessToken(code);//静默登录;
+                                                    } else {
+                                                        player.accessToken = await this.refreshAccessToken(player.accessToken.refresh_token);
+                                                    }
+                                                }
+                                                //TODO:如果现在有订单怎么办
+                                            }
+
+                                            if (player.accessToken != null) {
+                                                player.orderID = "order_" + player.accessToken.open_id + "_" + Date.now();
+                                                player.productIdx = Number(data.productIdx);
+                                                let product = Products[player.productIdx];
+                                                let tradeOrderID: TradeOrderID = await this.createOrder(player.orderID, product.productName, product.amount);
+                                                if (tradeOrderID != null) {
+                                                    if (tradeOrderID.error.code == "ok") {
+                                                        player.tradeOrderID = tradeOrderID.data.trade_order_id;
+                                                    } else {
+                                                        console.log(tradeOrderID.error.message);
+                                                        player.tradeOrderID = null;
+                                                    }
+                                                } else {
+                                                    player.tradeOrderID = null;
+                                                }
+                                            } else {
+                                                player.tradeOrderID = null;
+                                            }
+                                            res.end(JSON.stringify({ tradeOrderID: player.tradeOrderID }));
+                                        }
+                                        break;
                                     case MsgID.DeleteOrder:
                                         {
                                             let openID = data.openID;
@@ -60,7 +105,7 @@ export class GameServer {
                                                 player.tradeOrderID = null;
                                                 player.productIdx = -1;
                                             }
-                                            
+
 
                                         }
                                         break;
@@ -68,7 +113,7 @@ export class GameServer {
                                         {
 
                                         }
-                                        
+
                                         break;
                                     case MsgID.PayComplete:
 
@@ -93,79 +138,9 @@ export class GameServer {
                     }
 
 
-                    const query = url.parse(req.url || '', true).query;
-                    // console.log(query);
-                    let msgID = Number(query.msgid);
-                    switch (msgID) {
-                        case MsgID.CreateOrder:
-                            {
-
-                                let openID = query.openID as string;
-                                let code = query.code as string;
-
-                                let player: Player;
-                                // this.players.get(query.openID as string);
-                                if (openID == null || this.players.has(openID as string) == false) {//需要登录
-                                    player = PlayerPool.Inst.Pop();
-                                    player.accessToken = await this.getAccessToken(code);//静默登录;
-                                    this.players.set(openID, player);
-                                } else {
-                                    player = this.players.get(openID);
-                                    let now = Date.now();
-                                    if (now > player.accessToken.createTime + player.accessToken.expires_in - 10) {//token过期了
-                                        if (now > player.accessToken.createTime + player.accessToken.refresh_expires_in - 10) {
-                                            player.accessToken = await this.getAccessToken(code);//静默登录;
-                                        } else {
-                                            player.accessToken = await this.refreshAccessToken(player.accessToken.refresh_token);
-                                        }
-                                    }
-                                    //TODO:如果现在有订单怎么办
-                                }
-
-                                if (player.accessToken != null) {
-                                    player.orderID = "order_" + player.accessToken.open_id + "_" + Date.now();
-                                    player.productIdx = Number(query.productIdx);
-                                    let product = Products[player.productIdx];
-                                    let tradeOrderID: TradeOrderID = await this.createOrder(player.orderID, product.productName, product.amount);
-                                    if (tradeOrderID != null) {
-                                        if (tradeOrderID.error.code == "ok") {
-                                            player.tradeOrderID = tradeOrderID.data.trade_order_id;
-                                        } else {
-                                            console.log(tradeOrderID.error.message);
-                                            player.tradeOrderID = null;
-                                        }
-                                    } else {
-                                        player.tradeOrderID = null;
-                                    }
-                                } else {
-                                    player.tradeOrderID = null;
-                                }
-                                res.end(JSON.stringify({ tradeOrderID: player.tradeOrderID }));
-                            }
-                            break;
-                        // case MsgID.DeleteOrder:
-                        //     {
-                        //         let openID = query.openID as string;
-                        //         if (openID != null && this.players.has(openID as string) == true) {
-                        //             let player = this.players.get(openID);
-                        //             player.orderID = null;
-                        //             player.tradeOrderID = null;
-                        //             player.productIdx = -1;
-                        //         }
-                        //         res.end("");
-
-                        //     }
-                        //     break;
-                        // case MsgID.CheckComplete:
-                        //     {
-
-                        //     }
-                        //     res.end("");
-                        //     break;
-                        // case MsgID.PayComplete:
-
-                        //     break;
-                    }
+                    // const query = url.parse(req.url || '', true).query;
+                    res.writeHead(200, { 'Content-Type': 'text/plain' });
+                    res.end("hello, world");
                 }
 
             });
